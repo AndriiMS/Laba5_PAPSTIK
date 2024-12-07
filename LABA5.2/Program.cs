@@ -6,6 +6,7 @@ using NetFwTypeLib;
 using SharpPcap;
 using PacketDotNet;
 using System.Runtime.InteropServices;
+using System.Net.NetworkInformation;
 
 
 class FirewallAndScanner
@@ -126,7 +127,7 @@ class FirewallAndScanner
             Console.WriteLine($"Помилка додавання правила: {ex.Message}");
         }
     }
-    // Додає правило до брандмауера
+    // Додавання правил до брандмауера
     public static void AddFirewallRule(string ruleName, string remoteIP, string protocol, int port, NET_FW_RULE_DIRECTION_ direction, bool allow)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -149,7 +150,7 @@ class FirewallAndScanner
             if (protocol.Equals("All", StringComparison.OrdinalIgnoreCase))
             {
                 firewallRule.Protocol = (int)NET_FW_IP_PROTOCOL_.NET_FW_IP_PROTOCOL_ANY;
-                firewallRule.LocalPorts = null; // Порти не встановлюються для All
+                firewallRule.LocalPorts = null;
             }
             else if (protocol.Equals("TCP", StringComparison.OrdinalIgnoreCase))
             {
@@ -263,7 +264,7 @@ class FirewallAndScanner
         }
     }
 
-    // Метод для сканування мережі
+    //Сканер мережі
     public static void NetworkScanner()
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -300,7 +301,7 @@ class FirewallAndScanner
             // Сканування мережі
             var results = ScanNetworkRangeAsync(startIP, endIP, ports).Result;
 
-            // Групуємо та сортуємо результати для виведення
+            // Групування та сортування
             var groupedResults = results.GroupBy(r => r.IP).OrderBy(g => g.Key);
 
             // Виведення результатів у зрозумілому форматі
@@ -383,38 +384,48 @@ class FirewallAndScanner
         }
 
         var results = new List<ScanResult>();
-        var tasks = new List<Task<List<ScanResult>>>();
+        var tasks = new List<Task>();
 
-        // Скануємо кожну IP-адресу
+        // Сканування кожної IP-адреси
         for (var ip = start; IPAddressToLong(ip) <= endNum; ip = IncrementIP(ip))
         {
             string ipAddress = ip.ToString();
-            tasks.Add(ScanPortsAsync(ipAddress, ports));
-        }
 
-        // Чекаємо на завершення всіх завдань
-        try
-        {
-            var resultsArray = await Task.WhenAll(tasks);
-            foreach (var resultList in resultsArray)
+            tasks.Add(Task.Run(async () =>
             {
-                if (resultList != null)
+                if (await IsHostActiveAsync(ipAddress))
                 {
-                    results.AddRange(resultList);
+                    Console.WriteLine($"Хост {ipAddress} активний");
+                    var hostResults = await ScanPortsAsync(ipAddress, ports);
+                    lock (results)
+                    {
+                        results.AddRange(hostResults);
+                    }
                 }
                 else
                 {
-                    Console.WriteLine("Попередження: Один із результатів сканування був null.");
+                    Console.WriteLine($"Хост {ipAddress} не активний");
                 }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Помилка під час виконання завдань: {ex.Message}");
-            throw;
+            }));
         }
 
+        await Task.WhenAll(tasks);
         return results;
+    }
+    public static async Task<bool> IsHostActiveAsync(string host)
+    {
+        try
+        {
+            using (var ping = new Ping())
+            {
+                var reply = await ping.SendPingAsync(host, 1000); // Таймаут 1000 мс
+                return reply.Status == IPStatus.Success;
+            }
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // Асинхронне сканування портів для одного хоста
@@ -427,7 +438,7 @@ class FirewallAndScanner
         {
             var portResults = await Task.WhenAll(tasks);
 
-            // Фільтруємо результати
+            // Фільтрація результатів
             results.AddRange(portResults.Where(r => r != null));
         }
         catch (Exception ex)
@@ -453,7 +464,7 @@ class FirewallAndScanner
                     // Зчитування банера сервісу
                     string banner = GetServiceBanner(client);
 
-                    // Якщо банер порожній, встановлюємо ім'я за портом
+                    // Якщо банер порожній, встановлюється ім'я за портом
                     if (string.IsNullOrEmpty(banner))
                     {
                         banner = GetServiceByPort(port);
@@ -479,6 +490,8 @@ class FirewallAndScanner
             Service = "Невідомо"
         };
     }
+
+    //Метод банеру
 
     public static string GetServiceBanner(TcpClient client)
     {
@@ -532,27 +545,6 @@ class FirewallAndScanner
                 break;
         }
         return new IPAddress(bytes);
-    }
-
-    // Парсинг портів із підтримкою діапазонів
-    public static IEnumerable<int> ParsePorts(string input)
-    {
-        var ports = new List<int>();
-
-        foreach (var part in input.Split(','))
-        {
-            if (part.Contains('-'))
-            {
-                var range = part.Split('-').Select(int.Parse).ToArray();
-                ports.AddRange(Enumerable.Range(range[0], range[1] - range[0] + 1));
-            }
-            else
-            {
-                ports.Add(int.Parse(part));
-            }
-        }
-
-        return ports.Distinct();
     }
 
     // Вкладений клас для зберігання результатів сканування
